@@ -37,6 +37,23 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .badge-mix  { background:#f3e8ff; color:#6b21a8; padding:2px 10px; border-radius:20px; font-size:11px; font-weight:700; }
 .chat-user { background:#eff6ff; border-radius:10px; padding:12px 16px; margin:8px 0; }
 .chat-agent { background:#f0fdf4; border-radius:10px; padding:12px 16px; margin:8px 0; }
+
+/* Force dark text on all textareas so content is always readable */
+.stTextArea textarea,
+.stTextArea > div > div > textarea {
+    color: #1e293b !important;
+    background-color: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+}
+.stTextArea textarea:focus,
+.stTextArea > div > div > textarea:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
+}
+/* Multiselect and selectbox text */
+.stMultiSelect span, .stSelectbox > div > div {
+    color: #1e293b !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,11 +224,14 @@ if not st.session_state.pending_plan:
     cols = st.columns(3)
     for i, pill in enumerate(pills):
         if cols[i % 3].button(pill, key=f"pill_{i}"):
-            st.session_state.pending_instruction = pill
+            # Must write directly to the widget's own key; setting pending_instruction
+            # has no effect because Streamlit ignores value= once a key is in session_state.
+            st.session_state["instruction_input"] = pill
+            st.session_state.pending_instruction = ""
+            st.rerun()
 
     instruction = st.text_area(
         "Or type your instruction:",
-        value=st.session_state.pending_instruction,
         height=80,
         placeholder="e.g. Add three new users to Acme Corp: alice2@acme.com, bob2@acme.com, carol2@acme.com",
         key="instruction_input",
