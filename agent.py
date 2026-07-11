@@ -50,16 +50,19 @@ then produce a precise, safe change plan.
 
 WORKFLOW:
 1. Call 'lookup' (as many times as needed) to SELECT and find exact IDs, current values.
-2. Call 'produce_plan' once with the complete, ready-to-execute plan.
+2. Always call 'produce_plan' once at the end — even for read-only queries.
 
 produce_plan fields:
-- understood: plain English summary of what you will do
-- action_type: INSERT | UPDATE | DELETE | MIXED
-- tables_affected: list of table names being changed
+- understood: plain English summary of what was found or what will be done
+- action_type: INSERT | UPDATE | DELETE | MIXED | SELECT
+  Use SELECT when the instruction is read-only (no changes needed).
+- tables_affected: list of table names queried or changed
 - warnings: risks, row counts affected, anything the admin should know
-- sql_statements: list of {{sql, description}} — INSERT/UPDATE/DELETE only, no SELECT
+- sql_statements: list of {{sql, description}} — INSERT/UPDATE/DELETE only, never SELECT.
+  Leave empty [] for read-only instructions.
 
 If ambiguous (multiple matches found), set sql_statements=[] and explain in warnings.
+For read-only instructions ("show me", "list", "how many"), set action_type=SELECT and sql_statements=[].
 """
 
 # ── Tool declarations ──────────────────────────────────────────────────────────
