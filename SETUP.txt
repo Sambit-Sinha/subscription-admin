@@ -1,0 +1,90 @@
+SUBSCRIPTION ADMIN AGENT — SETUP & RUN GUIDE
+============================================
+
+STEP 1: Unzip and enter the folder
+-----------------------------------
+unzip subscription_admin.zip
+cd subscription_admin
+
+
+STEP 2: Create a virtual environment
+--------------------------------------
+Mac / Linux:
+    python -m venv venv
+    source venv/bin/activate
+
+Windows:
+    python -m venv venv
+    venv\Scripts\activate
+
+You should see (venv) at the start of your terminal prompt.
+
+
+STEP 3: Install dependencies
+------------------------------
+pip install -r requirements.txt
+
+
+STEP 4: Create your .env file
+-------------------------------
+Mac / Linux:
+    cp .env.example .env
+
+Windows:
+    copy .env.example .env
+
+Open the .env file in any text editor and fill in:
+
+    GEMINI_API_KEY=your_gemini_key_here
+
+Get a free Gemini API key at: https://aistudio.google.com/app/apikey
+(Free tier: 1500 requests/day)
+
+
+STEP 5: Choose your database
+------------------------------
+You have two options. Edit the .env file accordingly.
+
+OPTION A — Supabase (cloud, persistent, recommended):
+    Add your Supabase connection string to .env:
+
+        SUPABASE_DB_URL=postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT.supabase.co:5432/postgres
+
+    If this is a fresh machine, run the seeder ONCE to create tables:
+        python seed_supabase.py
+
+    The sidebar will show: green dot — Supabase (PostgreSQL)
+
+OPTION B — Local dummy database (offline, for testing):
+    Comment out or remove the SUPABASE_DB_URL line in .env:
+
+        # SUPABASE_DB_URL=...
+
+    The dummy database file is created automatically on first run.
+    No extra setup needed.
+
+    The sidebar will show: yellow dot — SQLite fallback (admin_dummy.db)
+
+To switch between the two at any time:
+    - Comment/uncomment the SUPABASE_DB_URL line in .env
+    - Restart the app (Ctrl+C, then streamlit run app.py again)
+
+
+STEP 6: Run the app
+---------------------
+streamlit run app.py
+
+Open your browser at: http://localhost:8501
+
+
+TROUBLESHOOTING
+---------------
+App shows yellow dot but you expected green (Supabase):
+  1. Check that SUPABASE_DB_URL is set in .env and not commented out
+  2. Restart the app after any .env change (hot-reload does not pick up env changes)
+  3. Your Supabase free project may be paused — go to supabase.com and click Restore
+  4. If your password has special characters, # must be written as %23 in the URL
+
+Gemini returns a 429 rate limit error:
+  Wait 60 seconds — the free tier allows 20 requests per minute.
+  Daily limit is 1500 requests.
