@@ -9,14 +9,18 @@ Given a natural language admin instruction, this module:
 """
 import json, os
 from google import genai
-from google.genai import types
+from openai import OpenAI
 import db
+from dotenv import load_dotenv
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=GEMINI_API_KEY)
-
+load_dotenv('.env.example')  # load GEMINI_API_KEY from .env
+client = OpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),          # or TOGETHER_API_KEY, OPENROUTER_API_KEY, etc.
+    base_url="https://api.groq.com/openai/v1",  # change per provider
+)
 SCHEMA_DESCRIPTION = """
 DATABASE SCHEMA (exact column names — use only these):
+IMPORTANT: All table names must be prefixed with the schema name "uat_new" (e.g., "your_schema_name"."table_name").
 
 subscription_tier      : subscription_tier_id, tier_name, total_credits
 subscription_tier_log  : subscription_tier_log_id, subscription_tier_id, action, details, created_date
@@ -63,126 +67,129 @@ produce_plan fields:
 
 If ambiguous (multiple matches found), set sql_statements=[] and explain in warnings.
 For read-only instructions ("show me", "list", "how many"), set action_type=SELECT and sql_statements=[].
+
+IMPORTANT RULES FOR TOOL USE:
+- You MUST use the provided tools (lookup and produce_plan).
+- Never answer with plain text when a tool call is needed.
+- When you are ready to give the final answer, you MUST call the produce_plan tool.
+- Do not output any text outside of tool calls until the plan is produced.
+- Always call produce_plan as the last step.
 """
 
 # ── Tool declarations ──────────────────────────────────────────────────────────
-_lookup_decl = types.FunctionDeclaration(
-    name="lookup",
-    description="Run a read-only SELECT query to resolve names, find IDs, check current values.",
-    parameters=types.Schema(
-        type="OBJECT",
-        properties={"sql": types.Schema(type="STRING", description="A SELECT query.")},
-        required=["sql"],
-    ),
-)
-
-_produce_plan_decl = types.FunctionDeclaration(
-    name="produce_plan",
-    description="Output the final change plan after all lookups are complete.",
-    parameters=types.Schema(
-        type="OBJECT",
-        properties={
-            "understood":      types.Schema(type="STRING"),
-            "action_type":     types.Schema(type="STRING", enum=["INSERT","UPDATE","DELETE","MIXED"]),
-            "tables_affected": types.Schema(type="ARRAY", items=types.Schema(type="STRING")),
-            "warnings":        types.Schema(type="ARRAY", items=types.Schema(type="STRING")),
-            "sql_statements":  types.Schema(
-                type="ARRAY",
-                items=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "sql":         types.Schema(type="STRING"),
-                        "description": types.Schema(type="STRING"),
-                    },
-                    required=["sql", "description"],
-                ),
-            ),
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Run a read-only SELECT query to resolve names, find IDs, check current values.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "A SELECT query."}
+                },
+                "required": ["sql"],
+            },
         },
-        required=["understood","action_type","tables_affected","warnings","sql_statements"],
-    ),
-)
-
-_tools = types.Tool(function_declarations=[_lookup_decl, _produce_plan_decl])
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "produce_plan",
+            "description": "Output the final change plan after all lookups are complete.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "understood":      {"type": "string"},
+                    "action_type":     {"type": "string", "enum": ["INSERT", "UPDATE", "DELETE", "MIXED", "SELECT"]},
+                    "tables_affected": {"type": "array", "items": {"type": "string"}},
+                    "warnings":        {"type": "array", "items": {"type": "string"}},
+                    "sql_statements":  {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "sql":         {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["sql", "description"],
+                        },
+                    },
+                },
+                "required": ["understood", "action_type", "tables_affected", "warnings", "sql_statements"],
+            },
+        },
+    },
+]
 
 
 def generate_plan(instruction: str) -> dict:
-    """
-    Agentic loop:
-      - Gemini calls 'lookup' as many times as needed (read-only)
-      - Gemini calls 'produce_plan' with the final structured plan
-      - We return that plan dict
-    """
-    # Build conversation history manually so we can inject function results
-    contents: list[types.Content] = [
-        types.Content(role="user", parts=[types.Part(text=instruction)])
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": instruction},
     ]
     lookup_log = []
 
-    for _ in range(12):   # max 12 rounds
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                tools=[_tools],
-            ),
+    for _ in range(12):
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",          # or "required" if you always want a tool call
+            temperature=0.1,             # lower = more reliable tool calls
+            max_tokens=1024,             # give it enough room
         )
 
-        # Append model response to history
-        contents.append(types.Content(role="model", parts=response.candidates[0].content.parts))
+        msg = response.choices[0].message
+        messages.append(msg)  # append the whole message (includes tool_calls)
 
-        # Find function calls
-        fn_calls = [p for p in response.candidates[0].content.parts if p.function_call]
-        if not fn_calls:
-            break   # model replied with text — no more tool calls
+        if not msg.tool_calls:
+            break
 
-        # Process each function call
-        fn_response_parts = []
         plan_result = None
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            args = json.loads(tc.function.arguments)
 
-        for p in fn_calls:
-            fc = p.function_call
-
-            if fc.name == "lookup":
-                sql = fc.args.get("sql", "")
+            if name == "lookup":
+                sql = args.get("sql", "")
                 try:
                     rows = db.query(sql)
-                    result = {"rows": rows[:50]}
+                    result = {"rows": json.loads(json.dumps(rows[:50], default=str))}
                     lookup_log.append({"sql": sql, "rows": len(rows)})
                 except Exception as e:
                     result = {"error": str(e)}
                     lookup_log.append({"sql": sql, "error": str(e)})
-                fn_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(name="lookup", response=result)
-                ))
 
-            elif fc.name == "produce_plan":
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result),
+                })
+
+            elif name == "produce_plan":
                 plan_result = {
-                    "understood":      str(fc.args.get("understood", "")),
-                    "action_type":     str(fc.args.get("action_type", "MIXED")),
-                    "tables_affected": list(fc.args.get("tables_affected", [])),
-                    "warnings":        list(fc.args.get("warnings", [])),
-                    "sql_statements":  [dict(s) for s in fc.args.get("sql_statements", [])],
+                    "understood":      str(args.get("understood", "")),
+                    "action_type":     str(args.get("action_type", "MIXED")),
+                    "tables_affected": list(args.get("tables_affected", [])),
+                    "warnings":        list(args.get("warnings", [])),
+                    "sql_statements":  [dict(s) for s in args.get("sql_statements", [])],
                     "lookup_log":      lookup_log,
                 }
-                fn_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(
-                        name="produce_plan", response={"status": "received"}
-                    )
-                ))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps({"status": "received"}),
+                })
 
-        # Return plan if we got one
         if plan_result:
             return plan_result
 
-        # Otherwise send function results back and loop
-        contents.append(types.Content(role="user", parts=fn_response_parts))
-
     return {
-        "understood":      "Could not generate a plan.",
-        "action_type":     "UNKNOWN",
+        "understood": "Could not generate a plan.",
+        "action_type": "UNKNOWN",
         "tables_affected": [],
-        "warnings":        ["Agent loop ended without a plan. Try rephrasing your instruction."],
-        "sql_statements":  [],
-        "lookup_log":      lookup_log,
+        "warnings": ["Agent loop ended without a plan. Try rephrasing your instruction."],
+        "sql_statements": [],
+        "lookup_log": lookup_log,
     }
