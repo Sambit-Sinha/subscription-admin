@@ -85,7 +85,8 @@ with st.sidebar:
     selected_table = st.selectbox("Select a table:", ["— choose —"] + all_tables, key="browse_table")
     if selected_table and selected_table != "— choose —":
         try:
-            rows = db.query(f'SELECT * FROM "{selected_table}" LIMIT 200')
+            your_schema_name = "uat_new" if db._use_postgres() else "prod_new"
+            rows = db.query(f'SELECT * FROM "{your_schema_name}"."{selected_table}" LIMIT 200')
             if rows:
                 df = pd.DataFrame(rows)
                 st.caption(f"{len(rows)} row(s) shown (max 200)")
